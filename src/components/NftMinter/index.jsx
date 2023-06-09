@@ -1,15 +1,87 @@
 import { Button } from "@mui/material";
 import { Xumm } from "xumm";
 import "./index.css";
+import { useEffect, useState } from "react";
+import { Buffer } from "buffer";
+import { XrplClient } from 'xrpl-client'
+import { NFTStorage } from "nft.storage";
+import { extractAffectedNFT } from "@xrplkit/txmeta";
 
-// const xumm = new Xumm('api-key')
+const xumm = new Xumm('b7c12e7b-9a6c-44a5-8503-c39253dc855d')
+const nftStorage = new NFTStorage({ token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJkaWQ6ZXRocjoweDZFMTg0Yzc2RmE5ZGYxMTRjMDVjOTQ5NzZiNDYxNEIzYjNkNGM3MDIiLCJpc3MiOiJuZnQtc3RvcmFnZSIsImlhdCI6MTY3NDk3MTc0NTAwMiwibmFtZSI6InRlc3QifQ.14XTqtXNLg7k9fMiEuRGZHGJnCmZ-aj67GF24t6JKU4",});
 
 export const NftMinter = () => {
+  const [account, setAccount] = useState(undefined);
+  const [file, setFile] = useState(undefined);
+
+  useEffect(() => {
+    xumm.on("success", async () => {
+      setAccount(await xumm.user.account);
+    });
+  }, []);
+
+  const connect = () => {
+    xumm.authorize();
+  };
+  const uploadImage = (e) => {
+    const files = e.target.files;
+    setFile(files[0])
+  };
+  const mint = async () => {
+    if (!file) {
+      alert("画像ファイルを選択してください！");
+      return;
+    }
+    // 画像とメタデータをIPFSにアップロード
+    const { url } = await nftStorage.store({
+      schema: "ipfs://QmNpi8rcXEkohca8iXu7zysKKSJYqCvBJn3xJwga8jXqWU",
+      nftType: "art.v0",
+      image: file,
+      name: "some name",
+      description: "some description",
+    });
+    // Xummにトランザクションデータを送信
+    const payload = await xumm.payload.createAndSubscribe({
+      TransactionType: "NFTokenMint",
+      NFTokenTaxon: 0,
+      Flags: 8,
+      URI: Buffer.from(url).toString("hex"),
+    });
+    payload.websocket.onmessage = (msg) => {
+      const data = JSON.parse(msg.data.toString());
+      // トランザクションへの署名が完了/拒否されたらresolve
+      if (typeof data.signed === "boolean") {
+        payload.resolve({ signed: data.signed, txid: data.txid });
+      }
+    };
+    // resolveされるまで待機
+    const { signed, txid } = await payload.resolved;
+    if (!signed) {
+      alert("トランザクションへの署名は拒否されました！");
+      return;
+    }
+    // テストネットからトランザクションの情報を取得
+    const client = new XrplClient("wss://testnet.xrpl-labs.com");
+    const txResponse = await client.send({
+      command: "tx",
+      transaction: txid,
+    });
+    // トランザクション情報からNFTの情報を取得
+    const nftoken = extractAffectedNFT(txResponse);
+    alert('NFTトークンが発行されました！')
+    window.open(`https://test.bithomp.com/nft/${nftoken.NFTokenID}`, "_blank");
+  };
   return (
     <div className="nft-minter-box">
       <div className="title">XRP NFT</div>
+      <div className="account-box">
+        <div className="account">{account}</div>
+        <Button variant="contained" onClick={connect}>
+          connect
+        </Button>
+      </div>
       <div className="image-box">
-        <Button variant="contained">
+        <Button variant="contained" onChange={uploadImage}>
           ファイルを選択
           <input
             className="imageInput"
@@ -18,6 +90,20 @@ export const NftMinter = () => {
           />
         </Button>
       </div>
+      {file && (
+          <img
+            src={window.URL.createObjectURL(file)}
+            alt="nft"
+            className="nft-image"
+          />
+      )}
+      {account && (
+        <div>
+          <Button variant="outlined" onClick={mint}>
+            mint
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
